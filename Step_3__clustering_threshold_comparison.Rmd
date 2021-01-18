@@ -1,0 +1,4218 @@
+---
+title: 'Shrew Bat Primer Trial - comparing output from different clustering thresholds'
+author: "Samuel Browett"
+date: "09/04/2020"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+#setwd("~/Dropbox/Shrew_Bat_Diet_Trial/Scripts/Analyses")
+
+```
+
+
+```{r message = FALSE, warning = FALSE}
+
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(vegan)
+#library(decontam)
+library(stringr)
+library(knitr)
+library(hilldiv)
+library(kableExtra)
+library(gridExtra)
+library(reshape2)
+
+```
+
+***
+
+
+
+# 1. Introduction
+
+Prior to this script, sequences have been clustered together into MOTUs using [sumaclust](https://git.metabarcoding.org/obitools/sumaclust/wikis/home) at similarity thresholds between 95% and 98%. Singletons have already been removed and MOTUs have already been assigned to taxonomy using blastn and NCBI database (see script XXX). The following batch of script were used to process/filter the MOTUs and clarify how many MOTUs are retained after filtering (i.e. removing low abundance samples and MOTUs and removing non=prey taxa such as vertebrate or parasitic taxa). 
+
+The code is shown for Gillet at 95% and Zeale at 95% clustering. The same code is repeated for thresholds between 96% - 98%. The full code is available on request, however it is just repeated chunks.
+
+# 2. Gillet
+
+## 2.1. Code (example using Gillet dataset after clustering sequences at 95%)
+
+### 2.1.1. Prepare Samples
+
+```{r}
+
+# Load Dataset
+load("../gillet_dataset/sumaclust95/phyloseq_object_clust95_iden_taxa_assigned_no_singletons.RData")
+# Change MOTU names to gMOTU_1, gMOTU_2 etc etc
+taxa_names(gillet.phylo95) <- paste("gMOTU", seq(nrow(tax_table(gillet.phylo95))), sep="_")
+# quickly remove very low read samples 
+gillet.phylo <- prune_samples(sample_sums(gillet.phylo95) > 50, gillet.phylo95)
+# examine what we're looking at
+gillet.phylo
+
+```
+
+
+
+```{r, message="hide"}
+# Remove 'sample.' part of sample names that obitools annoyingly adds
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+### 2.1.2. Examine Blanks
+
+Whats in the blanks?
+
+```{r, message="hide"}
+
+n <- which(otu_table(gillet.phylo)[,"G_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"G_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "G_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "G_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+### 2.1.3. Table: MOTUs in Blanks
+
+```{r}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks") %>%
+            kable_styling(bootstrap_options = "striped", 
+                          full_width = F,
+                          position = "left"))
+                       
+
+```
+
+
+Remove taxa of which the blanks hold over 2% of the total reads for that MOTU
+
+```{r}
+
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+# How many MOTUs left?
+phy.obj
+
+```
+
+### 2.1.4. Level of Host Amplification
+
+```{r}
+
+# Spare palette from https://graphicdesign.stackexchange.com/questions/3682/where-can-i-find-a-large-palette-set-of-contrasting-colors-for-coloring-many-d
+# Palette is from study to create most contrasting colours
+pal.o = c("#f0a3ff", # Araneae  
+          "#0075dc", # Arch *  
+          "#993f00", # Coleoptera
+          "#4c005c", # Diptera *
+          "#191919", # Ento *
+          "#005c31", # Geo *
+          "#2bce48", # Glom
+          "#ffcc99", # Hap *
+          "#808080", # Hemip
+          "#94ffb5", # Hymen
+          "#8f7c00", # Isopoda
+          "#9dcc00", # Julida
+          "#c20088", # Lepidop
+          "blue", # Lithobiomorpha *
+          "#ffa405", # Mesostig
+          "#ffa8bb", # Neuropter *
+          "#426600", # Oppiliones *
+          "#ff0010", # Orbitida *
+          "#5ef1f2",# Orthoptera *
+          "#00998f", # Poly *
+          "#e0ff66", # psocoptera
+          "indianred",     # Sarc 
+          "#003380",    # stylo
+          "green", # trom *
+          "khaki4",
+          "darkred",
+          "coral4",
+          "violetred2",
+          "#0075dc",
+          "#993f00") 
+
+
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+
+# What are the 3 unique taxa orders?
+unique(tax_table(samples.phylo)[,"order"])
+
+# Agglomerate MOTUs to order level
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+# Note that phyloseq has 3 taxa (Chiroptera, Eulipotyphla, Other)
+mm.oth
+
+# transform read counts to relative abundance
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.95 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+### 2.1.5. Figure: Host Amplification
+
+```{r plot_1.95, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 95%", cache=TRUE}
+
+p1.95
+
+```
+
+
+Check range of vertebrate amplification in samples
+
+```{r}
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+#unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+#mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+# Check Taxa
+taxa_names(mm.oth.ra) <- c("Vertebrate", "Other")
+tax_table(mm.oth.ra)[,1:2]
+
+# Proportion of host reads in each sample
+otu_table(mm.oth.ra)
+
+```
+
+
+```{r}
+# Range of Vertebrate amplification across all samples (%)
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS (%)
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies (%)
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats (%)
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+### 2.1.6. Remove non-prey taxa
+
+```{r}
+
+# Remove negative controls
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+# Remove non-prey taxa
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+```
+
+### 2.1.7. Filter low read Samples and MOTUs
+
+```{r}
+
+# remove samples with less than 1000 reads
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+# Extract OTU table
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+# Remove MOTUs from samples that have < 0.01% total reads of that sample
+new.otu.tab <- hilldiv::copy_filt(otu.tab, 0.0001)
+# Assign cleaned matrix to phyloseq object
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+# Check amount of remaining MOTUs
+sampl.filt
+# Remove MOTUs that are represented by < 5 reads in total
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+# The final dataset is...
+final.diet
+
+```
+
+### 2.1.8. Diet composition
+
+```{r setplot_2.95, cache=TRUE, message = "hide"}
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.95 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 95%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+### 2.1.9. Figure: Diet Composition
+
+```{r plot_2.95, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 95%", cache=TRUE}
+
+p2.95
+
+```
+
+```{r}
+
+# Range of sample depth of samples
+range(sample_sums(final.diet))
+# Range of read depth of taxa
+range(taxa_sums(final.diet))
+# Average read depth per sample
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment taxa coverage per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+### 2.1.10. Rarefaction 
+
+```{r gillet_rarefaction95, cache = TRUE, results="hide"}
+
+# Seperate phyloseq object per mammal species
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+# Grab random subset of 10 individuals from each mammal species to test
+set.seed(57)
+# Bat sample rarefaction
+x <- sample(nrow(df1), 10)
+r1 <- rarecurve(df1[x,])
+
+# GWTS sample rarefaction
+#y <- sample(nrow(df2), 10)
+r2 <- rarecurve(df2[,])
+
+# Pygmy sample rarefaction
+y <- sample(nrow(df3), 10)
+r3 <- rarecurve(df3[y,])
+
+
+```
+
+The following is an alternative way to show the rarefaction results
+
+```{r, eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r1
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r2
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r3
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+```
+
+### 2.1.11. Number of identified taxa
+
+The following is a chunky code to count the MOTUs that were correctly assigned to taxonomy at various levels, accoring to this studies criteria set and specified in the main text.
+
+It doe not count when the taxonomy contains "_sp." etc in the name
+
+```{r gillet_unique_taxa95, cache=TRUE}
+
+final.diet.g <- final.diet
+
+# Extract taxonomy table
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+# Create a table to save the results
+
+tabx <- data.frame(primer = NA, 
+                   order = NA, unique.orders = NA, 
+                   family = NA, unique.families = NA,
+                   genus = NA, unique.genus = NA,
+                   species = NA, unique.species = NA,
+                   total.taxa = NA,
+                   total.reads = NA)
+
+# Save results into the table/dataframe
+
+tabx[1,] <- c("Gillet95", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+Now that results have been saved in the dataframe, we repeat with each dataset and save the results in "tabx" dataframe
+
+***
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+## Sumaclust at 96%
+
+### Prepare Samples
+
+load("../gillet_dataset/sumaclust96/phyloseq_object_clust96_iden_taxa_assigned_no_singletons.RData")
+taxa_names(gillet.phylo96) <- paste("gMOTU", seq(nrow(tax_table(gillet.phylo96))), sep="_")
+
+gillet.phylo <- prune_samples(sample_sums(gillet.phylo96) > 500, gillet.phylo96)
+
+gillet.phylo
+
+```
+
+
+
+```{r , echo=FALSE, message = FALSE, results ="hide"}
+
+# Remove 'sample.' part of sample names that obitools annoyingly adds
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+### Examine Blanks
+n <- which(otu_table(gillet.phylo)[,"G_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"G_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "G_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "G_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks"))
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+# Remove taxa of which the blanks hold over 2% of the total reads for that MOTU
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+phy.obj
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Level of Host Amplification
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"order"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.96 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+```{r plot_1.96, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p1.96
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+#Check range of vertebrate amplification in samples
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+tax_table(mm.oth.ra)[,1:2]
+otu_table(mm.oth.ra)
+
+# Range of Vertebrate amplification across all samples
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Remove non-prey taxa
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+new.otu.tab <- copy_filt(otu.tab, 0.0001)
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+sampl.filt
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+final.diet
+
+
+```
+
+
+
+```{r barplot_2.96, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+### Plot Diet Composition
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.96 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 96%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+```{r plot_2.96, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.96
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+range(sample_sums(final.diet))
+range(taxa_sums(final.diet))
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment of read depth per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+## 2.2. Rarefaction Plots from clustering sequences at 96% - 98%
+
+```{r gillet_rarefaction96, cache = TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+### 2.2.1. 96% Clustering
+
+```{r , gillet_rare_curve96, cache=TRUE}
+
+set.seed(57)
+# Bat Rarefaction Curve
+x <- sample(nrow(df1), 10)
+r4 <- rarecurve(df1[x,])
+# GWTS Rarefaction Curve
+#y <- sample(nrow(df2), 10)
+r5 <- rarecurve(df2[,])
+# Pygmy Rarefaction Curve
+y <- sample(nrow(df3), 10)
+r6 <- rarecurve(df3[y,])
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide", eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r4
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r5
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r6
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+
+```
+
+
+
+```{r gillet_unique_taxa96, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+final.diet.g <- final.diet
+
+### Number of Identified Taxa
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+tabx[2,] <- c("Gillet96", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+## Sumaclust at 97%
+
+### Prepare Samples
+
+load("../gillet_dataset/sumaclust97/phyloseq_object_clust97_iden_taxa_assigned_no_singletons.RData")
+taxa_names(gillet.phylo97) <- paste("gMOTU", seq(nrow(tax_table(gillet.phylo97))), sep="_")
+
+gillet.phylo <- prune_samples(sample_sums(gillet.phylo97) > 50, gillet.phylo97)
+
+gillet.phylo
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+#Remove 'sample.' part of sample names that obitools annoyingly adds
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Examine Blanks
+n <- which(otu_table(gillet.phylo)[,"G_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"G_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "G_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "G_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks"))
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+#Remove taxa of which the blanks hold over 2% of the total reads for that MOTU
+
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+phy.obj
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Level of Host Amplification
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"order"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.97 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r plot_1.97, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p1.97
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+#Check range of vertebrate amplification in samples
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+tax_table(mm.oth.ra)[,1:2]
+otu_table(mm.oth.ra)
+
+# Range of Vertebrate amplification across all samples
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+### Remove non-prey taxa
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+new.otu.tab <- copy_filt(otu.tab, 0.0001)
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+sampl.filt
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+final.diet
+
+
+```
+
+
+
+```{r setplot_2.97, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+### Plot diet composition
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.97 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 97%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+
+```{r plot_2.97, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.97
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+range(sample_sums(final.diet))
+range(taxa_sums(final.diet))
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment of read depth per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+
+```{r gillet_rarefaction97, cache = TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+### 2.2.2. 97% Clustering
+
+```{r , gillet_rare_curve97, cache=TRUE}
+
+set.seed(57)
+# Bat Rarefaction Curve
+x <- sample(nrow(df1), 10)
+r7 <- rarecurve(df1[x,])
+# GWTS Rarefaction Curve
+#y <- sample(nrow(df2), 10)
+r8 <- rarecurve(df2[,])
+# Pygmy Rarefaction Curve
+y <- sample(nrow(df3), 10)
+r9 <- rarecurve(df3[y,])
+
+```
+
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide", eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r7
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r8
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r9
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+final.diet.g <- final.diet
+
+```
+
+
+```{r gillet_unique_taxa97, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+tabx[3,] <- c("Gillet97", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+```{r , echo=FALSE, message = FALSE, results ="hide"}
+
+## Sumaclust at 98%
+
+### Prepare Sample
+
+
+load("../gillet_dataset/sumaclust98/phyloseq_object_clust_iden98_taxa_assigned_no_singletons.RData")
+taxa_names(gillet.phylo) <- paste("gMOTU", seq(nrow(tax_table(gillet.phylo))), sep="_")
+
+gillet.phylo <- prune_samples(sample_sums(gillet.phylo) > 500, gillet.phylo)
+
+gillet.phylo
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+n <- which(otu_table(gillet.phylo)[,"G_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"G_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "G_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "G_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks"))
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+phy.obj
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"order"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.98 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r plot_1.98, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p1.98
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+tax_table(mm.oth.ra)[,1:2]
+otu_table(mm.oth.ra)
+
+# Range of Vertebrate amplification across all samples
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+new.otu.tab <- copy_filt(otu.tab, 0.0001)
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+sampl.filt
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+final.diet
+
+
+```
+
+
+```{r setplot_2.98, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.98 <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 98%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+
+
+```{r plot_2.98, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.98
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+range(sample_sums(final.diet))
+range(taxa_sums(final.diet))
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment of read depth per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+
+```{r gillet_rarefaction98, cache = TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+### 2.2.3. 98% Clustering
+
+```{r , gillet_rare_curve98, cache=TRUE}
+
+set.seed(57)
+# Bat Rarefaction Curve
+x <- sample(nrow(df1), 10)
+r10 <- rarecurve(df1[x,])
+# GWTS Rarefaction Curve
+#y <- sample(nrow(df2), 10)
+r11 <- rarecurve(df2[,])
+# Pygmy Rarefaction Curve
+y <- sample(nrow(df3), 10)
+r12 <- rarecurve(df3[y,])
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide", eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r10
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r11
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r12
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+final.diet.g <- final.diet
+
+```
+
+
+```{r gillet_unique_taxa98, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+tabx[4,] <- c("Gillet98", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+
+## 2.3. Composition of diet - Comparison
+
+```{r plot_compare, fig.height=20, fig.width=22, fig.cap="Comparing final diet composition when sequences are clustered at different thresholds: 95% - 98%", cache=TRUE}
+
+gridExtra::grid.arrange(p2.95,
+                        p2.96,
+                        p2.97,
+                        p2.98,
+                        nrow = 2)
+
+```
+
+
+## 2.4. Taxonomic Assignment at different cluster thresholds
+
+```{r}
+
+kable(tabx, caption = "Number of MOTUs assigned to taxonomy of different levels") %>%
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                position = "left")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+save(tabx, file="./tabx.RData")
+
+```
+
+***
+
+
+***
+
+# 3. Zeale
+
+## 3.1. Details
+
+### 3.1.1. Number of Samples and MOTUs
+
+```{r, echo=FALSE}
+
+# Load Dataset
+load("../zeale_dataset/sumaclust95/phyloseq_object_zeale_clust_iden95_taxa_assigned_no_singletons.RData")
+# Change MOTU names to zMOTU_1, zMOTU_2 etc etc
+taxa_names(zeale.phylo95) <- paste("zMOTU", seq(nrow(tax_table(zeale.phylo95))), sep="_")
+# quickly remove very low read samples 
+gillet.phylo <- prune_samples(sample_sums(zeale.phylo95) > 0, zeale.phylo95)
+# examine what we're looking at
+gillet.phylo
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+# Remove 'sample.' part of sample names that obitools annoyingly adds
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+n <- which(otu_table(gillet.phylo)[,"Z_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"Z_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "Z_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "Z_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+### 3.1.2. Table: MOTUs in Blanks
+
+```{r, echo=FALSE}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks") %>%
+            kable_styling(bootstrap_options = "striped", 
+                          full_width = F,
+                          position = "left"))
+                       
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+# How many MOTUs left?
+phy.obj
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+
+# What are the 3 unique taxa orders?
+unique(tax_table(samples.phylo)[,"order"])
+
+# Agglomerate MOTUs to order level
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+# Note that phyloseq has 3 taxa (Chiroptera, Eulipotyphla, Other)
+mm.oth
+
+# transform read counts to relative abundance
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.95z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+***
+
+### 3.1.3. Figure: Proportion of Host Reads in Samples
+
+```{r plot_1.95z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 95%", cache=TRUE, echo=FALSE}
+
+p1.95z
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+#unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+#mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+# Check Taxa
+taxa_names(mm.oth.ra) <- c("Vertebrate", "Other")
+tax_table(mm.oth.ra)[,1:2]
+
+# Proportion of host reads in each sample
+otu_table(mm.oth.ra)
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+# Range of Vertebrate amplification across all samples (%)
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS (%)
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies (%)
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats (%)
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+# Remove negative controls
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+# Remove non-prey taxa
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+```
+
+***
+
+### 3.1.4. Filtered Dataset
+
+```{r}
+
+# remove samples with less than 1000 reads
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+# Extract OTU table
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+# Remove MOTUs from samples that have < 0.01% total reads of that sample
+new.otu.tab <- hilldiv::copy_filt(otu.tab, 0.0001)
+# Assign cleaned matrix to phyloseq object
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+# Check amount of remaining MOTUs
+sampl.filt
+# Remove MOTUs that are represented by < 5 reads in total
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+# The final dataset is...
+final.diet
+
+```
+
+
+```{r setplot_2.95z, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.95z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 95%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+
+```{r plot_2.95z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 95%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.95z
+
+```
+
+***
+
+### 3.1.5. Read Depth of Samples
+
+```{r}
+
+# Range of sample depth of samples
+range(sample_sums(final.diet))
+# Range of read depth of taxa
+range(taxa_sums(final.diet))
+# Average read depth per sample
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment taxa coverage per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+***
+***
+
+## 3.2. Rarefaction 
+
+***
+
+### 3.2.1. 95% Clustering
+
+```{r zeale_rarefaction95, cache = TRUE, echo=FALSE, message = FALSE}
+
+# Seperate phyloseq object per mammal species
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+
+```{r zeale_rarecurve95, cache=TRUE}
+# Grab random subset of 10 individuals from each mammal species to test
+set.seed(57)
+# Bat sample rarefaction
+x <- sample(nrow(df1), 10)
+r1 <- rarecurve(df1[x,])
+
+# GWTS sample rarefaction
+#y <- sample(nrow(df2), 10)
+r2 <- rarecurve(df2[,])
+
+# Pygmy sample rarefaction
+y <- sample(nrow(df3), 10)
+r3 <- rarecurve(df3[y,])
+
+
+```
+
+```{r, eval=FALSE, echo=FALSE, message = FALSE, results ="hide"}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r1
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r2
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r3
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+```
+
+
+```{r zeale_unique_taxa95, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+final.diet.g <- final.diet
+
+# Extract taxonomy table
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+# Create a table to save the results
+
+# Save results into the table/dataframe
+
+tabx[5,] <- c("Zeale95", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+## Sumaclust at 96%
+
+### Prepare Samples
+
+load("../zeale_dataset/sumaclust96/phyloseq_object_zeale_clust_iden96_taxa_assigned_no_singletons.RData")
+taxa_names(zeale.phylo96) <- paste("zMOTU", seq(nrow(tax_table(zeale.phylo96))), sep="_")
+
+gillet.phylo <- prune_samples(sample_sums(zeale.phylo96) > 0, zeale.phylo96)
+
+gillet.phylo
+
+```
+
+
+
+```{r , echo=FALSE, message = FALSE, results ="hide"}
+
+# Remove 'sample.' part of sample names that obitools annoyingly adds
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+### Examine Blanks
+n <- which(otu_table(gillet.phylo)[,"Z_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"Z_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "Z_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "Z_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks"))
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+# Remove taxa of which the blanks hold over 2% of the total reads for that MOTU
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+phy.obj
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Level of Host Amplification
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"order"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.96z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+```{r plot_1.96z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p1.96z
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+#Check range of vertebrate amplification in samples
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+tax_table(mm.oth.ra)[,1:2]
+otu_table(mm.oth.ra)
+
+# Range of Vertebrate amplification across all samples
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Remove non-prey taxa
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+new.otu.tab <- copy_filt(otu.tab, 0.0001)
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+sampl.filt
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+final.diet
+
+
+```
+
+
+
+```{r barplot_2.96z, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+### Plot Diet Composition
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.96z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 96%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+```{r plot_2.96z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.96z
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+range(sample_sums(final.diet))
+range(taxa_sums(final.diet))
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment of read depth per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+
+```{r zeale_rarefaction96, cache = TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+***
+
+### 3.2.2. 96% Clustering
+
+```{r , zeale_rare_curve96, cache=TRUE}
+
+set.seed(57)
+# Bat Rarefaction Curve
+x <- sample(nrow(df1), 10)
+r4 <- rarecurve(df1[x,])
+# GWTS Rarefaction Curve
+#y <- sample(nrow(df2), 10)
+r5 <- rarecurve(df2[,])
+# Pygmy Rarefaction Curve
+y <- sample(nrow(df3), 10)
+r6 <- rarecurve(df3[y,])
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide", eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r4
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r5
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r6
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+
+```
+
+
+
+```{r zeale_unique_taxa96, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+final.diet.g <- final.diet
+
+### Number of Identified Taxa
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+tabx[6,] <- c("Zeale96", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+## Sumaclust at 97%
+
+### Prepare Samples
+
+load("../zeale_dataset/sumaclust97/phyloseq_object_zeale_clust_iden97_taxa_assigned_no_singletons.RData")
+taxa_names(zeale.phylo97) <- paste("zMOTU", seq(nrow(tax_table(zeale.phylo97))), sep="_")
+
+gillet.phylo <- prune_samples(sample_sums(zeale.phylo97) > 0, zeale.phylo97)
+
+gillet.phylo
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+#Remove 'sample.' part of sample names that obitools annoyingly adds
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Examine Blanks
+n <- which(otu_table(gillet.phylo)[,"Z_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"Z_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "Z_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "Z_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks"))
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+#Remove taxa of which the blanks hold over 2% of the total reads for that MOTU
+
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+phy.obj
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+### Level of Host Amplification
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"order"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.97z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r plot_1.97z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p1.97z
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+#Check range of vertebrate amplification in samples
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+tax_table(mm.oth.ra)[,1:2]
+otu_table(mm.oth.ra)
+
+# Range of Vertebrate amplification across all samples
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+### Remove non-prey taxa
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+new.otu.tab <- copy_filt(otu.tab, 0.0001)
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+sampl.filt
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+final.diet
+
+
+```
+
+
+
+```{r setplot_2.97z, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+### Plot diet composition
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.97z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 97%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+
+```{r plot_2.97z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.97z
+
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+range(sample_sums(final.diet))
+range(taxa_sums(final.diet))
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment of read depth per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+
+```{r zeale_rarefaction97, cache = TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+***
+
+### 3.2.3. 97% Clustering
+
+```{r zeale_rare_curve97, cache=TRUE}
+
+set.seed(57)
+# Bat Rarefaction Curve
+x <- sample(nrow(df1), 10)
+r7 <- rarecurve(df1[x,])
+# GWTS Rarefaction Curve
+#y <- sample(nrow(df2), 10)
+r8 <- rarecurve(df2[,])
+# Pygmy Rarefaction Curve
+y <- sample(nrow(df3), 10)
+r9 <- rarecurve(df3[y,])
+
+```
+
+
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide", eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r7
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r8
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r9
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+
+```
+
+
+```{r zeale_unique_taxa97, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+final.diet.g <- final.diet
+
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+tabx[7,] <- c("Zeale97", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+```{r , echo=FALSE, message = FALSE, results ="hide"}
+
+## Sumaclust at 98%
+
+### Prepare Sample
+
+load("../zeale_dataset/sumaclust98/phyloseq_object_zeale_clust_iden98_taxa_assigned_no_singletons.RData")
+taxa_names(zeale.phylo) <- paste("zMOTU", seq(nrow(tax_table(zeale.phylo))), sep="_")
+
+gillet.phylo <- prune_samples(sample_sums(zeale.phylo) > 0, zeale.phylo)
+
+gillet.phylo
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+chck <- sample_names(gillet.phylo)
+chck <- str_remove(chck, "sample.")
+sample_names(gillet.phylo) <- chck
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+n <- which(otu_table(gillet.phylo)[,"Z_NEG"] > 0)
+#otu_table(gillet.phylo)[n,"G_NEG"]
+#tax_table(gillet.phylo)[n,3:7]
+
+m <- which(otu_table(gillet.phylo)[,"Z_Neg"] > 0)
+#otu_table(gillet.phylo)[m,"G_Neg"]
+#tax_table(gillet.phylo)[m,3:7]
+
+l <- unique(c(n,m))
+blnk.df <- as.data.frame(as.matrix(tax_table(gillet.phylo))[l,4:7])
+blnk.df$total.reads <- taxa_sums(gillet.phylo)[l]
+blnk.df$Neg1.reads <- otu_table(gillet.phylo)[l, "Z_NEG"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg1.prop[i] <- (blnk.df$Neg1.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$Neg2.reads <- otu_table(gillet.phylo)[l, "Z_Neg"]
+for (i in 1:nrow(blnk.df)) {blnk.df$Neg2.prop[i] <- (blnk.df$Neg2.reads[i] / blnk.df$total.reads[i]) * 100 }
+blnk.df$perc <- apply(blnk.df[,c("Neg1.prop","Neg2.prop")], 1, sum)
+rownames(blnk.df) <- 1:nrow(blnk.df)
+
+#kable(blnk.df, caption = "MOTUs identified in the blanks")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+landscape(knitr::kable(blnk.df, caption = "MOTUs identified in the blanks"))
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+tab.nam <- blnk.df[,"perc"] > 2 # 2 is for 2%
+tab.df <- blnk.df[tab.nam,]
+
+removeTaxa <- rownames(tab.df) # Lists the MOTUs to remove 
+phy.obj <- subset_taxa(gillet.phylo, !(taxa_names(gillet.phylo) %in% removeTaxa))
+phy.obj
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- gillet.phylo
+
+samples.phylo <- tax_glom(gillet.phylo, taxrank = "order")
+n <- grep("Chiroptera", tax_table(samples.phylo)[,"order"])
+m <- grep("Eulipotyphla", tax_table(samples.phylo)[,"order"])
+tax_table(samples.phylo)[-c(n, m), 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"order"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "order")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+ra.samples.bar <- phyloseq::plot_bar(mm.oth.ra) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p1.98z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) + 
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() +
+  theme(legend.position = "right") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r plot_1.98z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p1.98z
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+
+n <- grep("Chordata", tax_table(samples.phylo)[,"phylum"])
+tax_table(samples.phylo)[-n, 1:4] <- "Other"
+unique(tax_table(samples.phylo)[,"phylum"])
+
+mm.oth <- tax_glom(samples.phylo, taxrank = "phylum")
+mm.oth
+mm.oth.ra = transform_sample_counts(mm.oth, function(x) 100 * x/sum(x))
+
+tax_table(mm.oth.ra)[,1:2]
+otu_table(mm.oth.ra)
+
+# Range of Vertebrate amplification across all samples
+range(otu_table(mm.oth.ra)[1,])
+
+# Range of Vertebrate amplification across GWTS
+gwts.prop <- subset_samples(mm.oth.ra, mammal == "GWTS")
+range(otu_table(gwts.prop)[1,])
+# Range of Vertebrate amplification across Pygmies
+pyg.prop <- subset_samples(mm.oth.ra, mammal == "Pygmy")
+range(otu_table(pyg.prop)[1,])
+# Range of Vertebrate amplification across Bats
+bat.prop <- subset_samples(mm.oth.ra, mammal == "Bat")
+range(otu_table(bat.prop)[1,])
+
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+samples.phylo <- subset_samples(phy.obj, mammal != "BLANK")
+diet.prey <- subset_taxa(samples.phylo, !(class %in% c("Mammalia", 
+                                                       "none",
+                                                       "Actinopteri",
+                                                       "Bdelloidea",
+                                                       "Udeonychophora", # velvet worms
+                                                       "Merostomata", # horse shoe crabs
+                                                       "Gammaproteobacteria", # bacteria
+                                                       "Magnoliopsida", # plants
+                                                       "Monogononta", # rotifers
+                                                       "Dothideomycetes", # fungi
+                                                       "Trebouxiophyceae", # green algae
+                                                       "Chondrichthyes", # Cartilaginous fish
+                                                       "Mucoromycetes", # fungi
+                                                       "Phylum_Endomyxa", # micro things
+                                                       "Eutardigrada", # tartigrades!!
+                                                       "Elardia", # Amoebas
+                                                       "Cephalopoda", # Cephalopods
+                                                       "Amphibia", # Amphibians
+                                                       "Aves", # Birds
+                                                       "Chromadorea", # roundworms
+                                                       "Hexanauplia",  # parasitic crustaceans
+                                                       "Kingdom_Metazoa",
+                                                       "Kingdom_",
+                                                       "Phylum_Discosea", # amoebas
+                                                       "Branchiopoda", # marine crustaceans
+                                                       "Phylum_Nematoda")))
+
+sampl.filt <- prune_samples(sample_sums(diet.prey) > 1000, diet.prey)
+otu.tab <- as.data.frame(otu_table(sampl.filt))
+new.otu.tab <- copy_filt(otu.tab, 0.0001)
+new.otu.tab <- as.matrix(new.otu.tab)
+otu_table(sampl.filt) <- otu_table(new.otu.tab, taxa_are_rows = TRUE)
+sampl.filt
+final.diet <- prune_taxa(taxa_sums(sampl.filt) > 4, sampl.filt)
+final.diet
+
+
+```
+
+
+```{r setplot_2.98z, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+
+order.glom <- tax_glom(final.diet, taxrank= "order")
+ntx <- as.numeric(ntaxa(order.glom))
+top25ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[1:19]), order.glom)
+othr.ord <- prune_taxa(names(sort(taxa_sums(order.glom),TRUE)[20:ntx]), order.glom)
+
+n <- taxa_names(othr.ord)
+tax_table(order.glom)[n, 1:4] <- "Other"
+n <- grep("Class_", tax_table(order.glom)[,"order"])
+tax_table(order.glom)[n, 1:4] <- "Other"
+top25ord <- tax_glom(order.glom, taxrank= "order")
+
+ra.samples = transform_sample_counts(top25ord, function(x) 100 * x/sum(x))
+ra.samples.bar <- phyloseq::plot_bar(ra.samples) # extracts information needed for barplots
+ra.samples.bar.data <- ra.samples.bar$data
+p2.98z <- ggplot(ra.samples.bar.data, aes(x= Sample, y=Abundance, fill = order)) +
+  geom_bar(stat="identity", color="black") +
+  scale_fill_manual(values = pal.o) +
+  facet_wrap(~ mammal, scale = "free_x") +
+  theme_classic() + # appearance composition
+  theme(strip.text.x = element_text(size = 15, face = "bold")) + # facet text
+#  scale_x_discrete(labels=c("Bat_Gillet" = "Bat\nN=22", "GWTS_Gillet" = "GWTS\nN=7", "Pygmy_Gillet" = "Pygmy\nN=15",
+#                            "Bat_Zeale" = "Bat\nN=23", "GWTS_Zeale" = "GWTS\nN=4", "Pygmy_Zeale" = "Pygmy\nN=11")) +
+    theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(0.8, "cm")) + 
+  ggtitle("Composition of diet - clustered at 98%") +
+  labs(y = "Relative Abundance") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20, 
+                                    face = "bold")) +
+  theme(axis.text.x = element_text(size = 12 , 
+                                   face = "bold",
+                                   angle = 45, 
+                                   hjust = 1),
+        axis.text.y = element_text(size = 12, 
+                                   face = "bold"))
+
+```
+
+
+
+```{r plot_2.98z, fig.height=8, fig.width=12, fig.cap="Composition of prey reads compared to host - clustered at 96%", cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+#p2.98z
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+range(sample_sums(final.diet))
+range(taxa_sums(final.diet))
+mean(sample_sums(final.diet))
+
+# hill_div packages assessment of read depth per sample, according to a shannon diversity equivilent
+depth_cov(new.otu.tab, 
+          qvalue = 1)
+
+
+```
+
+
+```{r zeale_rarefaction98, cache = TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+Bat_G <- prune_samples(sample_data(final.diet)$mammal == "Bat", final.diet)
+df1 <- as.data.frame(t(as.matrix(otu_table(Bat_G))))
+gwts_G <- prune_samples(sample_data(final.diet)$mammal == "GWTS", final.diet)
+df2 <- as.data.frame(t(as.matrix(otu_table(gwts_G))))
+pyg_G <- prune_samples(sample_data(final.diet)$mammal == "Pygmy", final.diet)
+df3 <- as.data.frame(t(as.matrix(otu_table(pyg_G))))
+
+```
+
+***
+
+### 3.2.3. 98% Clustering
+
+```{r zeale_rare_curve98, cache=TRUE}
+
+set.seed(57)
+# Bat Rarefaction Curve
+x <- sample(nrow(df1), 10)
+r10 <- rarecurve(df1[x,])
+# GWTS Rarefaction Curve
+#y <- sample(nrow(df2), 10)
+r11 <- rarecurve(df2[,])
+# Pygmy Rarefaction Curve
+y <- sample(nrow(df3), 10)
+r12 <- rarecurve(df3[y,])
+
+```
+
+
+```{r, echo=FALSE, message = FALSE, results ="hide", eval=FALSE}
+
+col <- c("black", "darkred", "forestgreen", "hotpink", "blue")
+lty <- c("solid", "dashed", "dotdash")
+lwd <- c(1, 2)
+pars <- expand.grid(col = col, lty = lty, lwd = lwd, 
+                    stringsAsFactors = FALSE)
+head(pars)
+
+out <- r10
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Bat - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r11
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - GWTS - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+out <- r12
+raremax <- 1000
+Nmax <- sapply(out, function(x) max(attr(x, "Subsample")))
+Smax <- sapply(out, max)
+
+plot(c(1, max(Nmax)), c(1, max(Smax)), main = "Gillet - Pygmy - Rarefaction",
+     xlab = "Sample Size",
+     ylab = "Species", type = "n", ylim = c(0,150)) 
+#abline(v = raremax)
+for (i in seq_along(out)) {
+  N <- attr(out[[i]], "Subsample")
+  with(pars, lines(N, out[[i]], col = col[i], lty = lty[i], lwd = lwd[i]))
+}
+
+
+```
+
+
+```{r zeale_unique_taxa98, cache=TRUE, echo=FALSE, message = FALSE, results ="hide"}
+
+final.diet.g <- final.diet
+
+df1 <- as.data.frame(as.matrix(tax_table(final.diet.g)))
+df <- df1
+
+df$pident <- as.character(df$pident)
+df$pident <- as.numeric(df$pident)
+###################
+## Species
+n <- which(df[,"pident"] > 97.9999)
+gn <- grep("Genus_", df[n,"species"])
+fm <- grep("Family_", df[n,"species"])
+or <- grep("Order_", df[n,"species"])
+cl <- grep("Class_", df[n,"species"])
+ph <- grep("Phylum_", df[n,"species"])
+kg <- grep("Kindgom_", df[n,"species"])
+nn <- grep("none", df[n,"species"])
+s.p <- grep("_sp._", df[n,"species"])
+n.r <- grep("_nr._", df[n,"species"])
+c.f <- grep("_cf._", df[n,"species"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f))
+sp.y <- length(df[n,"species"]) - x
+chck <- df[n[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f)],"species"]
+un.sp.y <- length(unique(chck))
+
+###################
+## Genus
+df <- df[-n,]
+n <- which(df[,"pident"] > 94.9999)
+gn <- grep("Genus_", df[n,"genus"])
+fm <- grep("Family_", df[n,"genus"])
+or <- grep("Order_", df[n,"genus"])
+cl <- grep("Class_", df[n,"genus"])
+ph <- grep("Phylum_", df[n,"genus"])
+kg <- grep("Kindgom_", df[n,"genus"])
+nn <- grep("none", df[n,"genus"])
+s.p <- grep("_sp._", df[n,"genus"])
+n.r <- grep("_nr._", df[n,"genus"])
+c.f <- grep("_cf._", df[n,"genus"])
+g.g <- grep("_gen._", df[n,"genus"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+gn.y <- length(df[n,"genus"]) - x
+
+gn <- grep("Genus_", df1[,"genus"])
+fm <- grep("Family_", df1[,"genus"])
+or <- grep("Order_", df1[,"genus"])
+cl <- grep("Class_", df1[,"genus"])
+ph <- grep("Phylum_", df1[,"genus"])
+kg <- grep("Kindgom_", df1[,"genus"])
+nn <- grep("none", df1[,"genus"])
+s.p <- grep("_sp._", df1[,"genus"])
+n.r <- grep("_nr._", df1[,"genus"])
+c.f <- grep("_cf._", df1[,"genus"])
+g.g <- grep("_gen._", df1[,"genus"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"genus"]
+un.gn.y <- length(unique(chck))
+
+###################
+## Family
+df <- df[-n,]
+n <- which(df[,"pident"] > 92.999)
+gn <- grep("Genus_", df[n,"family"])
+fm <- grep("Family_", df[n,"family"])
+or <- grep("Order_", df[n,"family"])
+cl <- grep("Class_", df[n,"family"])
+ph <- grep("Phylum_", df[n,"family"])
+kg <- grep("Kindgom_", df[n,"family"])
+nn <- grep("none", df[n,"family"])
+s.p <- grep("_sp._", df[n,"family"])
+n.r <- grep("_nr._", df[n,"family"])
+c.f <- grep("_cf._", df[n,"family"])
+g.g <- grep("_gen._", df[n,"family"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+fm.y <- length(df[n,"family"]) - x
+
+gn <- grep("Genus_", df1[,"family"])
+fm <- grep("Family_", df1[,"family"])
+or <- grep("Order_", df1[,"family"])
+cl <- grep("Class_", df1[,"family"])
+ph <- grep("Phylum_", df1[,"family"])
+kg <- grep("Kindgom_", df1[,"family"])
+nn <- grep("none", df1[,"family"])
+s.p <- grep("_sp._", df1[,"family"])
+n.r <- grep("_nr._", df1[,"family"])
+c.f <- grep("_cf._", df1[,"family"])
+g.g <- grep("_gen._", df1[,"family"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"family"]
+un.fm.y <- length(unique(chck))
+
+###################
+## Order
+df <- df[-n,]
+n <- which(df[,"pident"] > 89.9999)
+gn <- grep("Genus_", df[n,"order"])
+fm <- grep("Family_", df[n,"order"])
+or <- grep("Order_", df[n,"order"])
+cl <- grep("Class_", df[n,"order"])
+ph <- grep("Phylum_", df[n,"order"])
+kg <- grep("Kindgom_", df[n,"order"])
+nn <- grep("none", df[n,"order"])
+s.p <- grep("_sp._", df[n,"order"])
+n.r <- grep("_nr._", df[n,"order"])
+c.f <- grep("_cf._", df[n,"order"])
+g.g <- grep("_gen._", df[n,"order"])
+x <- length(c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f,g.g))
+or.y <- length(df[n,"order"]) - x
+
+gn <- grep("Genus_", df1[,"order"])
+fm <- grep("Family_", df1[,"order"])
+or <- grep("Order_", df1[,"order"])
+cl <- grep("Class_", df1[,"order"])
+ph <- grep("Phylum_", df1[,"order"])
+kg <- grep("Kindgom_", df1[,"order"])
+nn <- grep("none", df1[,"order"])
+s.p <- grep("_sp._", df1[,"order"])
+n.r <- grep("_nr._", df1[,"order"])
+c.f <- grep("_cf._", df1[,"order"])
+g.g <- grep("_gen._", df1[,"order"])
+chck <- df1[-c(gn,fm,or,cl,ph,kg,nn,s.p,n.r,c.f),"order"]
+un.or.y <- length(unique(chck))
+
+df <- df1
+
+#un.gn.y <- length(unique(df1[,"genus"]))
+#un.fm.y <- length(unique(df1[,"family"]))
+#un.or.y <- length(unique(df1[,"order"])) 
+
+tabx[8,] <- c("Zeale98", or.y, un.or.y, fm.y, un.fm.y, 
+              gn.y, un.gn.y, sp.y, un.sp.y, 
+              ntaxa(final.diet.g), sum(sample_sums(final.diet.g)))
+
+
+```
+
+***
+
+## 3.3. Composition of diet - Comparison
+
+```{r plot_comparez, fig.height=20, fig.width=20, fig.cap="Comparing final diet composition when sequences are clustered at different thresholds: 95% - 98%", cache=TRUE}
+
+gridExtra::grid.arrange(p2.95z,
+                        p2.96z,
+                        p2.97z,
+                        p2.98z,
+                        nrow = 2)
+
+```
+
+***
+
+## 3.4. Taxonomic Assignment at different cluster thresholds
+
+```{r}
+
+kable(tabx, caption = "Number of MOTUs assigned to taxonomy of different levels") %>%
+  kable_styling(bootstrap_options = "striped",
+                full_width = F,
+                position = "left")
+
+```
+
+```{r, echo=FALSE, message = FALSE, results ="hide"}
+
+save(tabx, file="./tabx.RData")
+
+```
+
+***
+***
+
+# 4. Compare Tax Assignment: Gillet vs Zeale
+
+***
+
+## 4.1. Number of MOTUs taxonomically assigned
+
+```{r}
+
+tabx$primer <- c(rep("Gillet", 4), rep("Zeale", 4))
+df <- melt(data = tabx, id.vars = "primer",
+           measure.vars = c("order", 
+                            "family", 
+                            "genus", 
+                            "species"))
+df$clust <- rep(c("95%", "96%", "97%", "98%"), 8)
+df$variable <- paste(df$variable, df$clust, sep = " ")
+
+df$value <- as.numeric(df$value)
+df$primer <- factor(df$primer, levels = c("Zeale", "Gillet"))
+df$variable <- factor(df$variable, levels = c("order 95%",
+                            "order 96%",
+                            "order 97%",
+                            "order 98%",
+                            "family 95%",
+                            "family 96%",
+                            "family 97%",
+                            "family 98%",
+                            "genus 95%",
+                            "genus 96%",
+                            "genus 97%",
+                            "genus 98%",
+                            "species 95%",
+                            "species 96%",
+                            "species 97%",
+                            "species 98%"))
+
+p <- ggplot(df, aes(x = variable, y=value)) +
+  geom_bar(aes(fill = primer), 
+           stat = "identity", 
+           color = "black", 
+           position = position_dodge()) +
+  theme_classic() +
+  scale_fill_manual(values = c("darkblue", "pink")) +
+  scale_x_discrete(labels=c("order 95%" = "Order - 95%",
+                            "order 96%" = "Order - 96%",
+                            "order 97%" = "Order - 97%",
+                            "order 98%" = "Order - 98%",
+                            "family 95%" = "Family - 95%",
+                            "family 96%" = "Family - 96%",
+                            "family 97%" = "Family - 97%",
+                            "family 98%" = "Family - 98%",
+                            "genus 95%" = "Genus - 95%",
+                            "genus 96%" = "Genus - 96%",
+                            "genus 97%" = "Genus - 97%",
+                            "genus 98%" = "Genus - 98%",
+                            "species 95%" = "Species - 95%",
+                            "species 96%" = "Species - 96%",
+                            "species 97%" = "Species - 97%",
+                            "species 98%" = "Species - 98%")) +
+  theme(axis.text.x = element_text(size = 12, angle = 45, hjust = 1,
+                                   face = "bold"),
+        axis.text.y = element_text(size = 12, face = "bold")) +
+  labs(y = "Number Identified") +
+  theme(legend.position = c(0.15,0.8)) +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 20)) +
+  #theme(legend.position = "bottom") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15, face = "bold"))
+
+p
+
+```
+
+***
+## 4.2. Proportion of MOTUs taxonomically assigned
+
+```{r}
+
+tabprop <- tabx
+tabprop[2:11] <- sapply(tabprop[2:11],as.numeric)
+for (i in 1:8){
+  tabprop[i,"order"] <- (tabprop[i,"order"]/tabprop[i, "total.taxa"]) * 100
+  tabprop[i,"family"] <- (tabprop[i,"family"]/tabprop[i, "total.taxa"]) * 100
+  tabprop[i,"genus"] <- (tabprop[i,"genus"]/tabprop[i, "total.taxa"]) * 100
+  tabprop[i,"species"] <- (tabprop[i,"species"]/tabprop[i, "total.taxa"]) * 100
+  }
+
+df <- melt(data = tabprop, id.vars = "primer",
+           measure.vars = c("order", 
+                            "family", 
+                            "genus", 
+                            "species"))
+df$clust <- rep(c("95%", "96%", "97%", "98%"), 8)
+df$variable <- paste(df$variable, df$clust, sep = " ")
+
+df$value <- as.numeric(df$value)
+df$primer <- factor(df$primer, levels = c("Zeale", "Gillet"))
+df$variable <- factor(df$variable, levels = c("order 95%",
+                                              "order 96%",
+                                              "order 97%",
+                                              "order 98%",
+                                              "family 95%",
+                                              "family 96%",
+                                              "family 97%",
+                                              "family 98%",
+                                              "genus 95%",
+                                              "genus 96%",
+                                              "genus 97%",
+                                              "genus 98%",
+                                              "species 95%",
+                                              "species 96%",
+                                              "species 97%",
+                                              "species 98%"))
+
+p2 <- ggplot(df, aes(x = variable, y=value)) +
+  geom_bar(aes(fill = primer), 
+           stat = "identity", 
+           color = "black", 
+           position = position_dodge()) +
+  theme_classic() +
+  scale_fill_manual(values = c("darkblue", "pink")) +
+  scale_x_discrete(labels=c("order 95%" = "Order - 95%",
+                            "order 96%" = "Order - 96%",
+                            "order 97%" = "Order - 97%",
+                            "order 98%" = "Order - 98%",
+                            "family 95%" = "Family - 95%",
+                            "family 96%" = "Family - 96%",
+                            "family 97%" = "Family - 97%",
+                            "family 98%" = "Family - 98%",
+                            "genus 95%" = "Genus - 95%",
+                            "genus 96%" = "Genus - 96%",
+                            "genus 97%" = "Genus - 97%",
+                            "genus 98%" = "Genus - 98%",
+                            "species 95%" = "Species - 95%",
+                            "species 96%" = "Species - 96%",
+                            "species 97%" = "Species - 97%",
+                            "species 98%" = "Species - 98%")) +
+  theme(axis.text.x = element_text(size = 12, angle = 45, hjust = 1,
+                                   face = "bold"),
+        axis.text.y = element_text(size = 12, face = "bold")) +
+  labs(y = "Proportion (%) Identified") +
+  ggtitle("Proportion of MOTUs identified") +
+  theme(legend.position = c(0.15,0.8)) +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 20)) +
+  #theme(legend.position = "bottom") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15, face = "bold"))
+
+```
+
+```{r plot_proportion_assigned, fig.cap="", cache=TRUE}
+
+p2
+
+```
+

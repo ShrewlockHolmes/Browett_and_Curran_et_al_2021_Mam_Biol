@@ -1,0 +1,170 @@
+# Sequence processing was performed using the Obitools pipeline
+# Performed on Linux operating system
+# Shown using the Shrew sequence files. The same process is applied to bat sequence files
+# forward reads here named Shrew_S2_L001_R1_001.fastq
+# Reverse reads here named Shrew_S2_L001_R2_001.fastq
+
+### unzip raw sequence fastq files
+
+gunzip Shrew_S2_L001_R*_001.fastq.gz
+
+### 1) Run FastQC to check quality of sequences
+
+fastqc Shrew_S2_L001_R1_001.fastq
+fastqc Shrew_S2_L001_R2_001.fastq
+
+# Quality is high and does not need trimming
+
+### 2) Merge forward and reverse reads
+
+~path_to_obitools/obitools # activates obitools
+
+illuminapairedend -r Shrews_S2_L001_R1_001.fastq Shrews_S2_L001_R2_001.fastq | obiannotate -S goodali:'"Good_Shrew" if score>40.00 else "Bad_Shrew"' | obisplit -t goodali
+
+# Timing is approx 10hrs
+
+### 3) Demultiplex samples using obitools ngsfilter
+
+ngsfilter -t Shrew_ngsfilter.tsv --fasta-output -u unidentified_Shrew.fasta Good_Shrew.fastq > Shrew.filtered.fasta
+
+# Timing is approx 6hrs
+
+### 4.1) Isolate Gillet dataset
+
+obigrep -a ‘experiment:Gillet’ Shrew.filtered.fasta > Shrew.Gillet.filtered.fasta
+
+# Timing is approx 25mins
+
+### 4.2) Isolate Zeale dataset
+
+obigrep -a ‘experiment:Zeale’ Shrew.filtered.fasta > Shrew.Zeale.filtered.fasta
+
+# Timing is approx 25mins
+
+### 5.1) Filter Gillet dataset sequences with length between 128 and 138bp and with no 'N' bases
+
+obigrep -p ‘seq_length>128’ -p ‘seq_length<138’ -s ‘^[ACGT]+$’ Shrew.Gillet.filtered.fasta > Shrew.filt.Gillet.length.fasta
+
+# Timing is approx 25mins
+
+### 5.2) Filter Gillet dataset sequences with length between 152 and 162bp and with no 'N' bases
+
+obigrep -p ‘seq_length>152’ -p ‘seq_length<162’ -s ‘^[ACGT]+$’ Shrew.Zeale.filtered.fasta > Shrew.filt.Zeale.length.fasta
+
+# Timing is approx 20mins
+
+
+### 6) Bat and Shrew samples were concantonated at this point
+
+cat Shrew.filt.Gillet.length.fasta Bat.filt.Gillet.length.fasta > all.filt.Gillet.length.fasta
+
+cat Shrew.filt.Zeale.length.fasta Bat.filt.Zeale.length.fasta > all.filt.Zeale.length.fasta
+
+
+### 7.1) Get unique sequences for Gillet dataset
+
+obiuniq -m sample all.filt.Gillet.length.fasta > ./Gillet/Gillet.uniq.fasta
+
+# Timing is approx 35 mins
+
+### 7.2) Get unique sequences for Zeale dataset
+
+obiuniq -m sample all.filt.Zeale.length.fasta > ./Zeale/Zeale.uniq.fasta
+
+# Timing is approx 25 mins
+
+### 8) Alter sequence identifiers to shorter and easier to read indexes
+
+Obiannotate --seq-rank ./Gillet/Gillet.uniq.fasta | obiannotate –-set-identifier ‘”’MOTU’_%09d” % seq_rank’ > ./Gillet/Shrew.new.fasta
+
+obiannotate --seq-rank ./Zeale/Zeale.uniq.fasta | obiannotate –-set-identifier ‘”’MOTU’_%09d” % seq_rank’ > ./Zeale/Shrew.new.fasta
+
+# Timing is approx 1 - 3 mins
+
+
+### 9) Detecting Chimeras
+
+# Chimeras are detected using vsearch, but the files need to be reformatted using a custom R script written by Dr Owen Wangensteen
+# The custom R script can be downloaded from - https://github.com/metabarpark/R_scripts_metabarpark
+
+# Gillet dataset
+
+Rscript owi_fast2vsearch.R -i ./Gillet/gillet.new.fasta -o ./Gillet/gillet.vsearch.fasta
+
+vsearch --uchime_denovo ./Gillet/gillet.vsearch.fasta --sizeout --nonchimeras ./Gillet/gillet.nonchimeras.fasta --uchimeout ./Gillet/gillet.uchimeout.txt
+
+# Timing is approx 5 mins
+
+# Zeale dataset
+
+Rscript owi_fast2vsearch.R -i ./Zeale/zeale.new.fasta -o ./Zeale/zeale.vsearch.fasta
+
+vsearch --uchime_denovo ./Zeale/zeale.vsearch.fasta --sizeout --nonchimeras ./Zeale/zeale.nonchimeras.fasta --uchimeout ./Zeale/zeale.uchimeout.txt
+
+# Timing is approx 5 mins
+
+
+## Removing Chimeras - note that no chimeras were detected in Zeale dataset
+
+# create a list of sequence identifiers for nonchimeras
+
+grep ‘>MOTU_’ Shrew.nonchimeras.fasta > nonchim.list.txt
+
+sed ‘s/;.*//’ nonchim.list.txt > nonchim.list2.txt
+
+sed ‘s/>//’ nonchim.list2.txt > nonchim.list3.txt
+
+
+# Isolate sequences that are not chimeras
+
+obigrep --id-list=./Gillet/nonchim.list3.txt ./Gillet/gillet.new.fasta > ./Gillet/gillet.nonchim.new.fasta
+
+# Timing is approx. 3 mins
+
+
+### 10) Clustering sequences using sumaclust
+
+# for this study, sequences were clustered at similarity levels between 95% and 98%
+# This script only shows code for 95% (-t 0.95) similarity
+# 5 cores were used (-p 5)
+
+# Gillet dataset
+
+sumaclust -t 0.95 -p 5 ./Gillet/gillet.nonchim.new.fasta > ./Gillet/gillet.sumaclust95.fasta
+
+# Zeale dataset
+
+sumaclust -t 0.95 -p 5 ./Zeale/zeale.new.fasta > ./Zeale/zeale.sumaclust95.fasta
+
+# Timing is approx. 1 min
+
+
+### 11) Re-organise and Reformat
+## Get tab file of sequence counts and clarify correct sequence counts are recorded using a custom script by Dr Owen Wangensteen
+# The custom R script can be downloaded from - https://github.com/metabarpark/R_scripts_metabarpark
+
+# Gillet
+
+obitab -o ./Gillet/gillet.sumaclust95.fasta > ./Gillet/gillet.sumaclust95.tab
+
+Rscript owi_recount_sumaclust -i ./Gillet/gillet.sumaclust95.tab -o ./Gillet/gillet.sumaclust95.csv
+
+# Zeale
+
+obitab -o ./Zeale/zeale.sumaclust95.fasta > ./Zeale/zeale.sumaclust95.tab
+
+
+
+### 12) Final Output ###
+
+Rscript owi_recount_sumaclust -i ./Zeale/zeale.sumaclust95.tab -o ./Zeale/zeale.sumaclust95.csv
+
+# The output is two .csv files that contain a list of sequence counts for each MOTU in each samples
+
+# Rows are MOTUs
+
+# The columns are laid out as
+# Column 1 = MOTU identifier; id
+# Column 2 = total number of reads in dataset for that MOTU; total_reads
+# Columns 3 to N = A column for each sample in the dataset, containing the number of reads found for that MOTU; N is the sample size
+# Column N + 1 = The sequence for that MOTU; sequence
