@@ -310,7 +310,7 @@ gillet.phylo <- phyloseq(tax_table(new.tax.mat),
 gillet.phylo
 
 # Save Phyloseq Object
-save(gillet.phylo, file="./phyloseq_object_clust_iden98_taxa_assignednone_no_singletons.RData")
+save(gillet.phylo, file="./phyloseq_object_clust_iden98_taxa_assigned_no_singletons.RData")
 
 
 ### 6) Empirically comparing taxonomic assignment from different clustering thresholds (95% - 98% in this case) is recommended
